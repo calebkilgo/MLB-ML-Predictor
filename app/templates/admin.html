@@ -61,6 +61,7 @@
     font-family: var(--fs-mono);
     font-size: 0.85rem;
     width: 100%;
+    appearance: none;
     -webkit-appearance: none;
   }
   .grid-form select {
@@ -218,7 +219,7 @@
       <form method="post" action="/admin/login">
         <label style="display:block;font-family:var(--fs-mono);font-size:0.6rem;letter-spacing:0.16em;color:var(--fg-mute);margin-bottom:0.4rem;">MASTER PASSWORD</label>
         <input type="password" name="password" autofocus required
-               style="width:100%;background:var(--bg-2);color:var(--fg);border:1px solid var(--line-2);border-radius:2px;padding:0.75rem;font-family:var(--fs-mono);font-size:0.9rem;-webkit-appearance:none;">
+               style="width:100%;background:var(--bg-2);color:var(--fg);border:1px solid var(--line-2);border-radius:2px;padding:0.75rem;font-family:var(--fs-mono);font-size:0.9rem;appearance: none;-webkit-appearance:none;">
         <button type="submit" style="margin-top:1rem;background:var(--accent);color:#000;border:none;border-radius:2px;padding:0.9rem 1.4rem;font-family:var(--fs-mono);font-size:0.7rem;font-weight:700;letter-spacing:0.14em;cursor:pointer;min-height:48px;width:100%;">LOGIN</button>
       </form>
     </div>

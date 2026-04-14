@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MLB PREDICT · Access</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .gate {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  .gatebox {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--card-radius);
+    padding: 2.4rem 2.2rem;
+    width: 100%;
+    max-width: 420px;
+    position: relative;
+    overflow: hidden;
+  }
+  .gatebox::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--blue));
+  }
+  .gatebox h1 {
+    font-family: var(--fs-display);
+    font-size: 2rem;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+  }
+  .gatebox .sub {
+    font-family: var(--fs-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.2em;
+    color: var(--fg-mute);
+    margin-bottom: 1.8rem;
+  }
+  .gatebox form { display: flex; flex-direction: column; gap: 1rem; }
+  .gatebox label {
+    font-family: var(--fs-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    color: var(--fg-mute);
+  }
+  .gatebox input[type="text"], .gatebox input[type="password"] {
+    background: var(--bg-2);
+    color: var(--fg);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    padding: 0.75rem 0.85rem;
+    font-family: var(--fs-mono);
+    font-size: 0.9rem;
+    letter-spacing: 0.05em;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+    /* Prevents iOS Safari from auto-zooming when focused */
+    -webkit-appearance: none;
+  }
+  .gatebox input:focus { border-color: var(--accent); }
+  .gatebox button {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 2px;
+    padding: 0.95rem 1rem;
+    font-family: var(--fs-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    cursor: pointer;
+    margin-top: 0.2rem;
+    transition: opacity 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    /* Bigger hit target on mobile */
+    min-height: 48px;
+  }
+  .gatebox button:hover { opacity: 0.85; }
+  .gatebox button:active { opacity: 0.7; }
+  .err {
+    background: rgba(255, 46, 82, 0.1);
+    border: 1px solid rgba(255, 46, 82, 0.35);
+    color: var(--red);
+    padding: 0.55rem 0.75rem;
+    font-family: var(--fs-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    border-radius: 2px;
+  }
+  .footnote {
+    margin-top: 1.6rem;
+    font-family: var(--fs-mono);
+    font-size: 0.58rem;
+    letter-spacing: 0.14em;
+    color: var(--fg-mute);
+    text-align: center;
+  }
+
+  /* Mobile tweaks */
+  @media (max-width: 480px) {
+    .gate { padding: 1rem 0.9rem; }
+    .gatebox { padding: 1.8rem 1.4rem; }
+    .gatebox h1 { font-size: 1.65rem; }
+    .gatebox .sub { font-size: 0.56rem; margin-bottom: 1.3rem; }
+  }
+</style>
+</head>
+<body>
+<div class="noise"></div>
+<div class="gate">
+  <div class="gatebox">
+    <h1>⚾ MLB PREDICT</h1>
+    <div class="sub">RESTRICTED ACCESS · KEY REQUIRED</div>
+    {% if error %}
+      <div class="err">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/unlock">
+      <label for="key">ACCESS KEY</label>
+      <input type="text" id="key" name="key" autocomplete="off"
+             autocapitalize="off" autocorrect="off"
+             autofocus spellcheck="false" required>
+      <button type="submit">UNLOCK</button>
+    </form>
+    <div class="footnote">CONTACT THE ADMIN FOR A KEY</div>
+  </div>
+</div>
+</body>
+</html>

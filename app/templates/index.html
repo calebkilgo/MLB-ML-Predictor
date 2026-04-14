@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLB PREDICT · Daily Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="noise"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">
+      <span class="dot"></span>
+      <span class="mark">MLB</span><span class="mark2">/PREDICT</span>
+    </div>
+    <div class="tagline">DAILY BOARD · CALIBRATED MODEL · EV VS -110</div>
+  </div>
+  <div class="meta">
+    <div class="metaitem"><span class="k">DATE</span><span class="v" id="date">—</span></div>
+    <div class="metaitem"><span class="k">GAMES</span><span class="v" id="gcount">—</span></div>
+    <div class="metaitem"><span class="k">UPDATED</span><span class="v" id="updated">—</span></div>
+  </div>
+</header>
+
+<nav class="filterbar">
+  <button class="chip active" data-filter="all">ALL</button>
+  <button class="chip" data-filter="Live"><span class="pulse"></span>LIVE</button>
+  <button class="chip" data-filter="Preview">UPCOMING</button>
+  <button class="chip" data-filter="Final">FINAL</button>
+  <div class="flex"></div>
+  <div class="legend">
+    <span class="legenditem"><em class="sw green"></em>+EV</span>
+    <span class="legenditem"><em class="sw amber"></em>MARGINAL</span>
+    <span class="legenditem"><em class="sw red"></em>LIVE</span>
+  </div>
+</nav>
+
+<main id="board">
+  <div class="loading">
+    <div class="loadbar"><div></div></div>
+    <div class="loadtext">FETCHING BOARD</div>
+  </div>
+</main>
+
+<footer class="footbar">
+  RESEARCH &amp; EDUCATIONAL USE ONLY · NO GUARANTEE OF PROFIT · EV COMPUTED VS STANDARD -110 JUICE (52.38% BREAK-EVEN)
+</footer>
+
+<script>
+const TEAM_COLORS = {
+  ARI:['#A71930','#E3D4AD'], ATL:['#CE1141','#13274F'], BAL:['#DF4601','#000000'],
+  BOS:['#BD3039','#0C2340'], CHC:['#0E3386','#CC3433'], CHW:['#27251F','#C4CED4'],
+  CIN:['#C6011F','#000000'], CLE:['#E31937','#0C2340'], COL:['#33006F','#C4CED4'],
+  DET:['#0C2340','#FA4616'], HOU:['#002D62','#EB6E1F'], KCR:['#004687','#BD9B60'],
+  LAA:['#BA0021','#003263'], LAD:['#005A9C','#EF3E42'], MIA:['#00A3E0','#EF3340'],
+  MIL:['#12284B','#FFC52F'], MIN:['#002B5C','#D31145'], NYM:['#002D72','#FF5910'],
+  NYY:['#003087','#E4002C'], OAK:['#003831','#EFB21E'], PHI:['#E81828','#002D72'],
+  PIT:['#FDB827','#27251F'], SDP:['#2F241D','#FFC425'], SEA:['#0C2C56','#005C5C'],
+  SFG:['#FD5A1E','#27251F'], STL:['#C41E3A','#0C2340'], TBR:['#092C5C','#8FBCE6'],
+  TEX:['#003278','#C0111F'], TOR:['#134A8E','#E8291C'], WSN:['#AB0003','#14225A'],
+};
+function tc(abbr){ return TEAM_COLORS[abbr] || ['#555','#888']; }
+
+function pct(x,d=1){ return (x*100).toFixed(d)+'%'; }
+function num(x,d=1){ return (x==null?'—':Number(x).toFixed(d)); }
+
+// ============================================================
+// EV = p * (100/110) - (1-p), the EV of a $1 bet at -110 odds.
+// Break-even is p = 110/210 ≈ 0.5238.
+// ============================================================
+function evAt110(p){
+  if (p == null) return null;
+  return p * (100/110) - (1 - p);
+}
+function fmtEV(ev){
+  if (ev == null) return '—';
+  const sign = ev >= 0 ? '+' : '';
+  return sign + (ev * 100).toFixed(1) + '%';
+}
+
+function fmtState(g){
+  if (g.state === 'Final') return 'FINAL';
+  if (g.state === 'Preview'){
+    if (g.start_time_utc){
+      const d = new Date(g.start_time_utc);
+      return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}).toUpperCase();
+    }
+    return 'SCHEDULED';
+  }
+  if (g.inning != null){
+    const half = g.inning_half ? g.inning_half.slice(0,3).toUpperCase() : '';
+    return `${half} ${g.inning}`;
+  }
+  return (g.detailed_state || 'LIVE').toUpperCase();
+}
+
+// Compute the best side + its EV for a single game.
+function bestPlay(g){
+  const m = g.model || {};
+  if (m.p_home_win == null) return null;
+  const homeEV = evAt110(m.p_home_win);
+  const awayEV = evAt110(m.p_away_win);
+  if (homeEV >= awayEV){
+    return {team: g.home_team, p: m.p_home_win, ev: homeEV, side: 'home'};
+  }
+  return {team: g.away_team, p: m.p_away_win, ev: awayEV, side: 'away'};
+}
+
+function evBadge(ev){
+  if (ev == null) return '';
+  const pct = (ev * 100).toFixed(1);
+  if (ev >= 0.05)  return `<span class="badge green">+${pct}% EV</span>`;
+  if (ev >= 0.02)  return `<span class="badge amber">+${pct}% EV</span>`;
+  if (ev >= 0)     return `<span class="badge gray">+${pct}% EV</span>`;
+  return `<span class="badge red">${pct}% EV</span>`;
+}
+
+function card(g, idx){
+  const m = g.model || {};
+  const [ac1] = tc(g.away_team);
+  const [hc1] = tc(g.home_team);
+  const pHome = m.p_home_win;
+  const pAway = m.p_away_win;
+  const best = bestPlay(g);
+
+  const bar = pHome != null
+    ? `<div class="probbar">
+         <div class="side away" style="width:${(pAway*100).toFixed(2)}%;background:${ac1}">
+           <span>${g.away_team}</span><span>${pct(pAway,0)}</span>
+         </div>
+         <div class="side home" style="width:${(pHome*100).toFixed(2)}%;background:${hc1}">
+           <span>${pct(pHome,0)}</span><span>${g.home_team}</span>
+         </div>
+       </div>`
+    : '';
+
+  const score = (g.home_score != null && g.away_score != null)
+    ? `<div class="score">
+         <div class="s s-away ${g.away_score>g.home_score?'win':''}">${g.away_score}</div>
+         <div class="dash">—</div>
+         <div class="s s-home ${g.home_score>g.away_score?'win':''}">${g.home_score}</div>
+       </div>`
+    : `<div class="score placeholder">
+         <div class="s">–</div><div class="dash">—</div><div class="s">–</div>
+       </div>`;
+
+  const liveWP = (g.state === 'Live' && g.live_home_win_prob != null)
+    ? `<div class="kv"><span class="k">LIVE WP</span><span class="v mono">${Number(g.live_home_win_prob).toFixed(0)}%</span></div>`
+    : '';
+
+  const proj = (m.proj_total_runs != null)
+    ? `<div class="kv"><span class="k">O/U</span><span class="v mono">${num(m.proj_total_runs,1)}</span></div>`
+    : '';
+
+  const liveClass = g.state === 'Live' ? 'live' : g.state.toLowerCase();
+  const liveDot   = g.state === 'Live' ? '<span class="pulse"></span>' : '';
+
+  return `
+    <article class="card ${liveClass}" style="--away:${ac1};--home:${hc1};animation-delay:${idx*35}ms">
+      <div class="stripe s-away"></div>
+      <div class="stripe s-home"></div>
+
+      <div class="chead">
+        <div class="teams">
+          <span class="tcode">${g.away_team}</span>
+          <span class="at">@</span>
+          <span class="tcode">${g.home_team}</span>
+        </div>
+        <div class="state">${liveDot}${fmtState(g)}</div>
+      </div>
+
+      ${score}
+
+      <div class="pitchers">
+        <div class="p"><span class="lbl">AWAY SP</span><span class="name">${g.away_pitcher || 'TBD'}</span></div>
+        <div class="p"><span class="lbl">HOME SP</span><span class="name">${g.home_pitcher || 'TBD'}</span></div>
+      </div>
+
+      ${bar}
+
+      <div class="pickline">
+        <div class="pickblock">
+          <span class="k">MODEL PICK</span>
+          <span class="v big">${best ? best.team : '—'}</span>
+          <span class="v sub mono">${best ? pct(best.p) : '—'}</span>
+        </div>
+        ${best ? evBadge(best.ev) : ''}
+      </div>
+
+      <div class="kvrow">
+        ${proj}
+        ${liveWP}
+        ${m.confidence != null ? `<div class="kv"><span class="k">CONF</span><span class="v mono">${pct(m.confidence,0)}</span></div>` : ''}
+      </div>
+    </article>
+  `;
+}
+
+// ============================================================
+// TOP PLAYS: top 3 by EV across all non-Final games with +EV.
+// ============================================================
+function topPlayCard(g, rank){
+  const m = g.model || {};
+  const [ac1] = tc(g.away_team);
+  const [hc1] = tc(g.home_team);
+  const best = bestPlay(g);
+  if (!best) return '';
+
+  const pickColor = best.side === 'home' ? hc1 : ac1;
+  const stateText = fmtState(g);
+  const liveDot = g.state === 'Live' ? '<span class="pulse"></span>' : '';
+
+  return `
+    <article class="topcard" style="--pick:${pickColor};--away:${ac1};--home:${hc1};animation-delay:${rank*80}ms">
+      <div class="rank">#${rank + 1}</div>
+      <div class="topbody">
+        <div class="topmatch">
+          <span class="tcode">${g.away_team}</span>
+          <span class="at">@</span>
+          <span class="tcode">${g.home_team}</span>
+          <span class="topstate">${liveDot}${stateText}</span>
+        </div>
+        <div class="toppick">
+          <span class="lbl">PICK</span>
+          <span class="picknm">${best.team}</span>
+          <span class="pickpct mono">${pct(best.p)}</span>
+        </div>
+        <div class="toppitchers">
+          ${g.away_pitcher || 'TBD'} <span class="sep">vs</span> ${g.home_pitcher || 'TBD'}
+        </div>
+      </div>
+      <div class="topev">
+        <div class="evlabel">EXPECTED VALUE</div>
+        <div class="evnum">${fmtEV(best.ev)}</div>
+        <div class="evsub mono">vs -110</div>
+      </div>
+    </article>
+  `;
+}
+
+let ALL_GAMES = [];
+let FILTER = 'all';
+
+function render(){
+  const games = FILTER === 'all' ? ALL_GAMES : ALL_GAMES.filter(g => g.state === FILTER);
+
+  // --- TOP PLAYS: only from upcoming/live games, sorted by EV, +EV only ---
+  const candidates = ALL_GAMES
+    .filter(g => g.state !== 'Final')
+    .map(g => ({g, play: bestPlay(g)}))
+    .filter(x => x.play && x.play.ev > 0)
+    .sort((a, b) => b.play.ev - a.play.ev)
+    .slice(0, 3);
+
+  let topHtml = '';
+  if (FILTER === 'all' && candidates.length > 0){
+    topHtml = `<section class="group topgroup">
+      <div class="grouphead">
+        <h2>TOP PLAYS</h2>
+        <span class="gcount">${String(candidates.length).padStart(2,'0')}</span>
+        <div class="line"></div>
+        <span class="groupnote">SORTED BY +EV VS -110</span>
+      </div>
+      <div class="topgrid">
+        ${candidates.map((x, i) => topPlayCard(x.g, i)).join('')}
+      </div>
+    </section>`;
+  }
+
+  // --- Regular groups ---
+  const groupOrder = FILTER === 'all'
+    ? [['Live','LIVE NOW'], ['Preview','UPCOMING'], ['Final','FINAL']]
+    : [[FILTER, FILTER.toUpperCase()]];
+
+  const by = {Live:[], Preview:[], Final:[]};
+  games.forEach(g => (by[g.state] ||= []).push(g));
+
+  // Within each group, sort by EV descending so best plays rise to the top.
+  for (const k of Object.keys(by)){
+    by[k].sort((a, b) => {
+      const ea = (bestPlay(a) || {}).ev ?? -99;
+      const eb = (bestPlay(b) || {}).ev ?? -99;
+      return eb - ea;
+    });
+  }
+
+  let groupsHtml = '';
+  let idx = 0;
+  for (const [key, label] of groupOrder){
+    const list = by[key] || [];
+    if (!list.length) continue;
+    groupsHtml += `<section class="group">
+      <div class="grouphead">
+        <h2>${label}</h2>
+        <span class="gcount">${String(list.length).padStart(2,'0')}</span>
+        <div class="line"></div>
+      </div>
+      <div class="grid">${list.map(g => card(g, idx++)).join('')}</div>
+    </section>`;
+  }
+
+  const html = topHtml + groupsHtml;
+  document.getElementById('board').innerHTML =
+    html || '<div class="empty">NO GAMES IN WINDOW</div>';
+}
+
+async function load(){
+  try {
+    const r = await fetch('/api/games');
+    const j = await r.json();
+    if (j.warming) {
+      document.getElementById('board').innerHTML =
+        `<div class="loading">
+           <div class="loadbar"><div></div></div>
+           <div class="loadtext">WARMING BOARD · FIRST BUILD ~30S</div>
+         </div>`;
+      setTimeout(load, 3000);
+      return;
+    }
+    ALL_GAMES = j.games || [];
+    document.getElementById('gcount').textContent = String(ALL_GAMES.length).padStart(2,'0');
+    document.getElementById('updated').textContent =
+      new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    const today = new Date();
+    document.getElementById('date').textContent =
+      today.toLocaleDateString([], {month:'short', day:'2-digit', year:'numeric'}).toUpperCase();
+    render();
+  } catch (e) {
+    document.getElementById('board').innerHTML =
+      `<div class="empty">ERROR: ${e.message}</div>`;
+  }
+}
+
+document.querySelectorAll('.chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    FILTER = btn.dataset.filter;
+    render();
+  });
+});
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

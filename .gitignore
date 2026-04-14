@@ -8,7 +8,7 @@ data/access/
 data/predictions/
 data/raw/
 data/processed/
-models/
+/models/
 reports/
 
 # ---- python ----

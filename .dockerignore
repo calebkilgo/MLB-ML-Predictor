@@ -9,7 +9,7 @@ venv
 .fly
 fly.toml
 data/
-models/
+/models/
 reports/
 *.parquet
 *.pkl

@@ -1,0 +1,39 @@
+# Fly.io configuration for MLB Predict
+# App name must be unique across all Fly apps — you'll be asked to pick one
+# during `fly launch`. Edit the line below if you want to set it in advance.
+
+app = "mlb-predict-caleb"
+primary_region = "iad"  # US East (Ashburn, VA) — change if you prefer another region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  DATA_DIR = "/app/data"
+  MODEL_DIR = "/app/models"
+  REPORT_DIR = "/app/reports"
+  WEATHER_CACHE = "/app/data/raw/weather.parquet"
+  SEASONS_START = "2015"
+  SEASONS_END = "2024"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[mounts]
+  source = "mlb_data"
+  destination = "/app/data"

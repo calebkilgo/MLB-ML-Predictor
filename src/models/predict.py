@@ -85,10 +85,17 @@ def _latest_team_row(team: str) -> dict[str, float]:
 
     def _extract(row: pd.Series, side: str) -> dict[str, float]:
         out = {}
-        for metric in ("rs_10", "ra_10", "wp_10", "rd_10",
-                       "rs_30", "ra_30", "wp_30", "rd_30",
-                       "rs_std", "ra_std", "wp_std", "rd_std"):
-            out[metric] = float(row[f"{side}_{metric}"])
+        metrics = (
+            "rs_5",  "ra_5",  "wp_5",  "rd_5",
+            "rs_10", "ra_10", "wp_10", "rd_10",
+            "rs_30", "ra_30", "wp_30", "rd_30",
+            "rs_std", "ra_std", "wp_std", "rd_std",
+            "rs_ewm", "ra_ewm", "wp_ewm", "rd_ewm",
+            "streak",
+        )
+        for metric in metrics:
+            col = f"{side}_{metric}"
+            out[metric] = float(row[col]) if col in row.index else 0.0
         out["elo"] = float(row[f"elo_{'home' if side == 'home' else 'away'}"])
         return out
 
@@ -98,10 +105,12 @@ def _latest_team_row(team: str) -> dict[str, float]:
     if len(a):
         return _extract(a.iloc[0], "away")
     return {
+        "rs_5": 4.5, "ra_5": 4.5, "wp_5": 0.5, "rd_5": 0.0,
         "rs_10": 4.5, "ra_10": 4.5, "wp_10": 0.5, "rd_10": 0.0,
         "rs_30": 4.5, "ra_30": 4.5, "wp_30": 0.5, "rd_30": 0.0,
         "rs_std": 4.5, "ra_std": 4.5, "wp_std": 0.5, "rd_std": 0.0,
-        "elo": 1500.0,
+        "rs_ewm": 4.5, "ra_ewm": 4.5, "wp_ewm": 0.5, "rd_ewm": 0.0,
+        "streak": 0.0, "elo": 1500.0,
     }
 
 
@@ -145,9 +154,14 @@ def build_row(g: GameInput) -> pd.DataFrame:
         "home_rest": g.home_rest,
         "away_rest": g.away_rest,
     }
-    for metric in ("rs_10", "ra_10", "wp_10", "rd_10",
-                   "rs_30", "ra_30", "wp_30", "rd_30",
-                   "rs_std", "ra_std", "wp_std", "rd_std"):
+    for metric in (
+        "rs_5",  "ra_5",  "wp_5",  "rd_5",
+        "rs_10", "ra_10", "wp_10", "rd_10",
+        "rs_30", "ra_30", "wp_30", "rd_30",
+        "rs_std", "ra_std", "wp_std", "rd_std",
+        "rs_ewm", "ra_ewm", "wp_ewm", "rd_ewm",
+        "streak",
+    ):
         row[f"home_{metric}"] = h[metric]
         row[f"away_{metric}"] = a[metric]
         row[f"diff_{metric}"] = h[metric] - a[metric]
@@ -166,10 +180,41 @@ def predict(g: GameInput) -> dict:
     X_clf = X[[c for c in clf_b["features"] if c in X.columns]].astype(float)
     X_reg = X[[c for c in reg_b["features"] if c in X.columns]].astype(float)
 
-    p_home = float(clf_b["model"].predict_proba(X_clf)[0, 1])
+    # Use stacked ensemble if available, fall back to single model.
+    lgb_m = clf_b.get("lgb_model")
+    xgb_m = clf_b.get("xgb_model")
+    meta_m = clf_b.get("meta_model")
+    if lgb_m is not None and xgb_m is not None and meta_m is not None:
+        import numpy as np
+        p_lgb = float(lgb_m.predict_proba(X_clf)[0, 1])
+        p_xgb = float(xgb_m.predict_proba(X_clf)[0, 1])
+        X_meta = np.array([[p_lgb, p_xgb]])
+        p_home = float(meta_m.predict_proba(X_meta)[0, 1])
+    else:
+        p_home = float(clf_b["model"].predict_proba(X_clf)[0, 1])
     runs = float(reg_b["model"].predict(X_reg)[0])
 
-    conf = float(min(1.0, abs(p_home - 0.5) * 2 + 0.1))
+    # Confidence = how far the model is from a coin-flip, expressed on [0, 1].
+    # Using 2*(p - 0.5) gives 0% at p=0.5 and 100% at p=1.0 / p=0.0.
+    # We also factor in signal strength from ELO diff and team rolling stats
+    # so confidence reflects both the probability estimate AND the consistency
+    # of the underlying signals.
+    row = X.iloc[0]
+    elo_diff = float(row.get("elo_diff", 0.0))
+    diff_wp_10 = float(row.get("diff_wp_10", 0.0))
+    diff_rd_10 = float(row.get("diff_rd_10", 0.0))
+
+    # Normalize signal strength contributions (clamp to reasonable range)
+    elo_signal = min(1.0, abs(elo_diff) / 200.0)      # 200 Elo pts ≈ strong
+    form_signal = min(1.0, abs(diff_wp_10) / 0.20)    # 20 pp win-rate gap ≈ strong
+    run_diff_signal = min(1.0, abs(diff_rd_10) / 1.5)  # 1.5 run/game ≈ strong
+
+    # Blend: probability distance (primary) + signal consistency (secondary)
+    p_dist = abs(p_home - 0.5) * 2.0  # [0, 1]
+    signal_avg = (elo_signal + form_signal + run_diff_signal) / 3.0
+    conf = float(min(1.0, 0.70 * p_dist + 0.30 * signal_avg))
+
+    # Run distribution: weight home runs slightly more if home team favored
     weight = 0.45 + 0.1 * p_home
     home_runs = runs * weight
     away_runs = runs - home_runs

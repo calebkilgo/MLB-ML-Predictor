@@ -17,7 +17,7 @@ COPY pyproject.toml ./
 COPY README.md ./README.md
 RUN pip install --upgrade pip && \
     pip install . && \
-    pip install python-multipart
+    pip install python-multipart xgboost scipy
 
 # Copy the rest of the project
 COPY . .
@@ -30,17 +30,38 @@ RUN mkdir -p /app/data/raw /app/data/processed /app/data/access \
 
 EXPOSE 8080
 
-# Entry: first-boot ETL + training if needed, then uvicorn.
-# The ETL scripts are idempotent — if parquets already exist, they skip.
+# Model version stamp — bump this string whenever the feature set or
+# model architecture changes so Railway automatically retrains on next deploy.
+# The bootstrap writes this stamp to /app/models/.model_version after a
+# successful train; if it is absent or mismatched, a retrain is triggered.
+ENV MODEL_VERSION="v2-ensemble-2025-04"
+
+# Entry: version-gated ETL + training, then uvicorn.
+# - Full ETL runs only when neither features nor raw data exist (first boot).
+# - Model retrain runs whenever MODEL_VERSION stamp is stale — this lets
+#   you force a retrain by bumping MODEL_VERSION without deleting volumes.
 CMD bash -c '\
     set -e; \
-    if [ ! -f /app/data/processed/features_v2.parquet ] || [ ! -f /app/models/clf_v2.pkl ]; then \
-        echo "[bootstrap] first boot: running full ETL + training"; \
+    STAMP=/app/models/.model_version; \
+    CURRENT=$(cat "$STAMP" 2>/dev/null || echo ""); \
+    NEED_ETL=0; NEED_TRAIN=0; \
+    if [ ! -f /app/data/processed/features_v2.parquet ]; then \
+        NEED_ETL=1; NEED_TRAIN=1; \
+    fi; \
+    if [ "$CURRENT" != "$MODEL_VERSION" ] || [ ! -f /app/models/clf_v2.pkl ]; then \
+        NEED_TRAIN=1; \
+    fi; \
+    if [ "$NEED_ETL" = "1" ]; then \
+        echo "[bootstrap] first boot — running full ETL"; \
         python -m src.etl.build_dataset && \
-        python -m src.etl.starter_logs && \
+        python -m src.etl.starter_logs; \
+    fi; \
+    if [ "$NEED_TRAIN" = "1" ]; then \
+        echo "[bootstrap] rebuilding features + training ensemble (version $MODEL_VERSION)"; \
         python -m src.features.rolling_v2 && \
-        python -m src.models.train_v2 ; \
+        python -m src.models.train_v2 && \
+        echo "$MODEL_VERSION" > "$STAMP"; \
     else \
-        echo "[bootstrap] features and model already on volume, skipping ETL"; \
+        echo "[bootstrap] model is current ($MODEL_VERSION), skipping retrain"; \
     fi; \
     exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'

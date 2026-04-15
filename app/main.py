@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -17,6 +18,8 @@ from app.service import run_prediction
 from src.adjustments import apply_adjustments, total_runs_adjustment
 from src.models.predict import GameInput, predict
 
+logger = logging.getLogger(__name__)
+
 BASE = Path(__file__).parent
 app = FastAPI(title="MLB Predict", version="0.9.0")
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
@@ -29,6 +32,10 @@ ADMIN_SESSION_SECS = 4 * 3600  # 4 hours
 REFRESH_SECS = 300
 _BOARD: dict = {"ready": False, "games": [], "built_at": 0, "building": False}
 _LOCK = threading.Lock()
+
+# Calibration state for the /api/calibration endpoint.
+_LAST_CAL_RESULT: dict = {}
+_CAL_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +65,9 @@ def _process_game(g: dict) -> dict:
             "proj_total_runs": t_adj,
             "proj_home_runs": home_runs,
             "proj_away_runs": away_runs,
-            "confidence": min(1.0, abs(p_adj - 0.5) * 2 + 0.1),
+            # Reuse the richer confidence from the base model (which factors
+            # in ELO, form, run-diff signals) but rescale for the adjusted p.
+            "confidence": base.get("confidence", min(1.0, abs(p_adj - 0.5) * 2.0)),
         }
         g["adjustments"] = {
             "probability": p_break,
@@ -109,10 +118,70 @@ def _build_board() -> None:
             _BOARD["building"] = False
 
 
+def _run_maintenance() -> None:
+    """Retroactive resolution sweep + auto-calibration check.
+
+    Called after every board build so that:
+    - Games from past days that were missed (e.g. during downtime) get
+      resolved via a direct MLB API query.
+    - Auto-calibration fires whenever enough new resolved games accumulate.
+    """
+    global _LAST_CAL_RESULT
+
+    # 0a. Refresh umpire bias from umpscorecards.com (cached 18h).
+    try:
+        from src.etl.umpire_scraper import refresh_umpire_bias
+        refresh_umpire_bias()
+    except Exception as e:
+        print(f"[maintenance] umpire refresh failed: {e}")
+
+    # 0b. Refresh Statcast pitcher metrics from Baseball Savant (cached 20h).
+    try:
+        from src.etl.statcast_cache import refresh_statcast
+        refresh_statcast()
+        # Invalidate in-memory caches so next board build uses fresh data.
+        import app.daily_context as _dc
+        _dc._XSTATS = None
+        _dc._ROLLING_STATS = None
+    except Exception as e:
+        print(f"[maintenance] statcast refresh failed: {e}")
+
+    # 1. Retroactive resolution for past unresolved games.
+    try:
+        res = prediction_log.resolve_past_games()
+        if res["resolved"] > 0:
+            print(f"[maintenance] retroactive resolution: "
+                  f"checked={res['checked']} resolved={res['resolved']}")
+    except Exception as e:
+        print(f"[maintenance] resolve_past_games failed: {e}")
+
+    # 2. Auto-calibration check.
+    try:
+        from src.auto_calibrate import check_and_calibrate
+        cal = check_and_calibrate()
+        with _CAL_LOCK:
+            _LAST_CAL_RESULT = cal
+        if cal.get("ran"):
+            changes = cal.get("weight_changes", [])
+            chg_str = ", ".join(
+                f"{c['name']} {c['old']:.4f}->{c['new']:.4f}" for c in changes
+            )
+            print(
+                f"[maintenance] auto-calibration ran — "
+                f"n={cal['n_resolved']} new={cal['new_since_last']} "
+                f"changes=[{chg_str}]"
+            )
+        else:
+            print(f"[maintenance] calibration skipped: {cal.get('reason', '')}")
+    except Exception as e:
+        print(f"[maintenance] auto-calibration failed: {e}")
+
+
 def _refresh_loop() -> None:
     while True:
         time.sleep(REFRESH_SECS)
         _build_board()
+        _run_maintenance()
 
 
 @app.on_event("startup")
@@ -316,6 +385,35 @@ def admin_revoke(request: Request, kid: str = Form(...)) -> Response:
     return RedirectResponse(url="/admin", status_code=302)
 
 
+@app.post("/api/admin/calibrate")
+def api_admin_calibrate(request: Request) -> Response:
+    """Force an immediate calibration pass regardless of thresholds.
+    Requires admin auth.
+    """
+    if not _admin_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        from src.auto_calibrate import check_and_calibrate
+        result = check_and_calibrate(force=True)
+        with _CAL_LOCK:
+            _LAST_CAL_RESULT.update(result)
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/admin/resolve")
+def api_admin_resolve(request: Request) -> Response:
+    """Force an immediate retroactive resolution sweep. Requires admin auth."""
+    if not _admin_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = prediction_log.resolve_past_games()
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ---------------------------------------------------------------------------
 # Gated routes
 # ---------------------------------------------------------------------------
@@ -356,7 +454,14 @@ def api_calibration(request: Request) -> Response:
     gate = _gate(request)
     if gate is not None:
         return gate
-    return JSONResponse(prediction_log.summary())
+    from src.auto_calibrate import history_summary
+    with _CAL_LOCK:
+        last_result = dict(_LAST_CAL_RESULT)
+    return JSONResponse({
+        "prediction_stats": prediction_log.summary(),
+        "calibration_history": history_summary(),
+        "last_run_result": last_result,
+    })
 
 
 @app.post("/api/predict", response_model=PredictResponse)

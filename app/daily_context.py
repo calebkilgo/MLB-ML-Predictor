@@ -31,6 +31,7 @@ LEAGUE_AVG_WOBA = 0.315
 ABBR_TO_TEAM_ID = {v: k for k, v in TEAM_ID_TO_ABBR.items()}
 
 _XSTATS: pd.DataFrame | None = None
+_ROLLING_STATS: pd.DataFrame | None = None
 
 
 def _cached_get(url: str, headers: dict | None = None) -> dict:
@@ -53,15 +54,30 @@ def _xstats() -> pd.DataFrame:
     if _XSTATS is not None:
         return _XSTATS
     year = date.today().year
-    path = CFG.raw_dir / f"statcast_pitchers_{year}.parquet"
-    if not path.exists():
-        path = CFG.raw_dir / f"statcast_pitchers_{year - 1}.parquet"
-    if path.exists():
-        _XSTATS = pd.read_parquet(path).set_index("mlb_id")
-    else:
-        _XSTATS = pd.DataFrame(columns=["xwoba", "xera"]).set_index(
-            pd.Index([], name="mlb_id"))
+    for y in (year, year - 1):
+        path = CFG.raw_dir / f"statcast_pitchers_{y}.parquet"
+        if path.exists():
+            _XSTATS = pd.read_parquet(path).set_index("mlb_id")
+            return _XSTATS
+    _XSTATS = pd.DataFrame(columns=["xwoba", "xera"]).set_index(
+        pd.Index([], name="mlb_id"))
     return _XSTATS
+
+
+def _rolling_stats() -> pd.DataFrame:
+    global _ROLLING_STATS
+    if _ROLLING_STATS is not None:
+        return _ROLLING_STATS
+    year = date.today().year
+    for y in (year, year - 1):
+        path = CFG.raw_dir / f"statcast_rolling_{y}.parquet"
+        if path.exists():
+            _ROLLING_STATS = pd.read_parquet(path).set_index("mlb_id")
+            return _ROLLING_STATS
+    _ROLLING_STATS = pd.DataFrame(
+        columns=["velo_avg", "whiff_pct", "hard_hit_pct", "k_pct", "bb_pct"]
+    ).set_index(pd.Index([], name="mlb_id"))
+    return _ROLLING_STATS
 
 
 def pitcher_xstats(mlb_id: int | None) -> tuple[float | None, float | None]:
@@ -74,6 +90,28 @@ def pitcher_xstats(mlb_id: int | None) -> tuple[float | None, float | None]:
         xwoba = float(row.get("xwoba", None) or 0) or None
         return xera, xwoba
     return None, None
+
+
+def pitcher_rolling_statcast(mlb_id: int | None) -> dict[str, float | None]:
+    """Return season-to-date Statcast metrics for a pitcher (velo, whiff, etc.)."""
+    empty: dict[str, float | None] = {
+        "velo_avg": None, "whiff_pct": None,
+        "hard_hit_pct": None, "k_pct": None, "bb_pct": None,
+    }
+    if mlb_id is None:
+        return empty
+    df = _rolling_stats()
+    if mlb_id not in df.index:
+        return empty
+    row = df.loc[mlb_id]
+    out: dict[str, float | None] = {}
+    for k in empty:
+        v = row.get(k)
+        try:
+            out[k] = float(v) if v is not None and not pd.isna(v) else None
+        except (TypeError, ValueError):
+            out[k] = None
+    return out
 
 
 def _player_woba_vs_hand(person_id: int, season: int, hand: str
@@ -125,6 +163,13 @@ def _game_lineups(game_pk: int) -> tuple[list[int], list[int]]:
     return away, home
 
 
+# Batting-order position weights: cleanup slots (3-5) matter most;
+# leadoff (1) matters less; bottom of order (7-9) least.
+# Weights sum to len(ids) so the weighted average stays in the same
+# scale as the unweighted one (no rescaling needed downstream).
+_ORDER_WEIGHTS = [0.80, 0.95, 1.20, 1.30, 1.25, 1.10, 0.90, 0.75, 0.70]
+
+
 def lineup_woba(game_pk: int, home_sp_id: int | None, away_sp_id: int | None,
                 season: int) -> tuple[tuple[float | None, float | None],
                                       tuple[float | None, float | None]]:
@@ -137,19 +182,22 @@ def lineup_woba(game_pk: int, home_sp_id: int | None, away_sp_id: int | None,
     def _agg(ids: list[int], hand: str | None) -> tuple[float | None, float | None]:
         if not ids or not hand:
             return None, None
-        total_woba_x_pa = 0.0
-        total_pa = 0.0
+        total_woba_x_w = 0.0
+        total_w = 0.0
         n_with_data = 0
-        for pid in ids:
+        for i, pid in enumerate(ids[:9]):
+            order_w = _ORDER_WEIGHTS[i] if i < len(_ORDER_WEIGHTS) else 0.70
             w, pa = _player_woba_vs_hand(pid, season, hand)
             if w is None or pa is None or pa <= 0:
                 continue
-            total_woba_x_pa += w * pa
-            total_pa += pa
+            # Weight by both PA-based Bayesian reliability AND batting-order position.
+            combined_w = pa * order_w
+            total_woba_x_w += w * combined_w
+            total_w += combined_w
             n_with_data += 1
-        if total_pa <= 0:
+        if total_w <= 0:
             return None, None
-        return total_woba_x_pa / total_pa, total_pa / max(n_with_data, 1)
+        return total_woba_x_w / total_w, total_w / max(n_with_data, 1)
 
     return _agg(home_ids, away_sp_hand), _agg(away_ids, home_sp_hand)
 
@@ -162,8 +210,26 @@ def _ip_to_float(ip) -> float:
     return float(s) if s else 0.0
 
 
+def _bullpen_stress_penalty(ip_3day: float) -> float:
+    """FIP degradation from recent workload.
+
+    Pitchers who threw >3 IP over the prior 3 days are considered stressed.
+    Each additional inning above 3 adds 0.15 to expected FIP.
+    Cap at +0.75 (5 extra IP ≈ fully taxed bullpen arm).
+    """
+    excess = max(0.0, ip_3day - 3.0)
+    return min(0.75, excess * 0.15)
+
+
 def bullpen_fips(team_id: int, game_date: date, season: int
                  ) -> tuple[float | None, float | None]:
+    """Return (full_bullpen_fip, stress_adjusted_available_fip).
+
+    Improvement over prior version: instead of a binary available/unavailable
+    flag, each arm now gets a continuous FIP penalty based on how many IP
+    they threw in the last 3 days.  A pitcher who threw 1 IP yesterday is
+    slightly degraded; one who threw 3+ IP is fully unavailable.
+    """
     roster = _cached_get(
         f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?rosterType=active"
     ).get("roster", [])
@@ -196,29 +262,34 @@ def bullpen_fips(team_id: int, game_date: date, season: int
         return None, None
     full_fip = sum(f for _, f in fips) / len(fips)
 
-    unavailable: set[int] = set()
-    y1 = (game_date - timedelta(days=1)).isoformat()
-    y2 = (game_date - timedelta(days=2)).isoformat()
-    for pid, _ in fips:
+    # 3-day workload window: day-before weighted 1.0, 2-ago 0.6, 3-ago 0.3
+    day_weights = {
+        (game_date - timedelta(days=1)).isoformat(): 1.0,
+        (game_date - timedelta(days=2)).isoformat(): 0.6,
+        (game_date - timedelta(days=3)).isoformat(): 0.3,
+    }
+    stressed_fips: list[float] = []
+    for pid, base_fip in fips:
         data = _cached_get(
             f"https://statsapi.mlb.com/api/v1/people/{pid}/stats"
             f"?stats=gameLog&group=pitching&season={season}"
         )
         splits = data.get("stats", [{}])[0].get("splits", [])
-        y1_p, y2_p = 0, 0
+        ip_weighted = 0.0
         for sp in splits:
-            pitches = int((sp.get("stat") or {}).get("numberOfPitches", 0) or 0)
-            if sp.get("date") == y1:
-                y1_p += pitches
-            elif sp.get("date") == y2:
-                y2_p += pitches
-        if y1_p >= 25 or (y1_p >= 15 and y2_p >= 15):
-            unavailable.add(pid)
+            w = day_weights.get(sp.get("date", ""), 0.0)
+            if w > 0:
+                ip_weighted += _ip_to_float(
+                    (sp.get("stat") or {}).get("inningsPitched", 0)
+                ) * w
+        penalty = _bullpen_stress_penalty(ip_weighted)
+        # Pitchers who threw 3+ weighted IP are effectively unavailable
+        if ip_weighted < 3.0:
+            stressed_fips.append(base_fip + penalty)
 
-    avail = [f for pid, f in fips if pid not in unavailable]
-    if not avail:
+    if not stressed_fips:
         return full_fip, full_fip
-    return full_fip, sum(avail) / len(avail)
+    return full_fip, sum(stressed_fips) / len(stressed_fips)
 
 
 def home_plate_umpire(game_pk: int) -> str | None:
@@ -230,24 +301,57 @@ def home_plate_umpire(game_pk: int) -> str | None:
     return None
 
 
-def wind_for_game(home_team: str, game_date: date) -> tuple[float | None, float | None]:
+def wind_for_game(home_team: str, game_date: date
+                  ) -> tuple[float | None, float | None, float | None,
+                             float | None, float | None]:
+    """Return (wind_kph, wind_dir_deg, temp_c, humidity_pct, pressure_hpa).
+
+    Uses Open-Meteo forecast API for future games and archive API for past
+    games. All five values are None if the stadium is not in STADIUMS.
+
+    Why these fields matter:
+    - temp_c: Ball carries ~1% further per 10°C above 15°C; hot day at Coors
+      can add 0.3–0.5 runs/game.
+    - humidity_pct: Low humidity (dry air, <40%) adds carry; high humidity
+      (>80%) reduces it. Effect is smaller than temp but measurable.
+    - pressure_hpa: Sea-level pressure ~1013 hPa; Denver ~840 hPa at Coors.
+      Lower pressure = less air resistance = more carry on fly balls.
+    """
     if home_team not in STADIUMS:
-        return None, None
+        return None, None, None, None, None
     lat, lon = STADIUMS[home_team]
+    today = date.today()
+
+    if game_date <= today:
+        # Use archive endpoint for past / today's games
+        base_url = "https://archive-api.open-meteo.com/v1/archive"
+    else:
+        # Use forecast endpoint for future games
+        base_url = "https://api.open-meteo.com/v1/forecast"
+
     url = (
-        "https://archive-api.open-meteo.com/v1/archive"
+        f"{base_url}"
         f"?latitude={lat}&longitude={lon}"
         f"&start_date={game_date.isoformat()}&end_date={game_date.isoformat()}"
-        "&daily=wind_speed_10m_max,wind_direction_10m_dominant"
+        "&daily=wind_speed_10m_max,wind_direction_10m_dominant,"
+        "temperature_2m_max,relative_humidity_2m_mean,pressure_msl_mean"
         "&timezone=America%2FNew_York"
     )
     d = _cached_get(url).get("daily", {})
-    try:
-        kph = float((d.get("wind_speed_10m_max") or [None])[0])
-        deg = float((d.get("wind_direction_10m_dominant") or [None])[0])
-        return kph, deg
-    except (TypeError, ValueError):
-        return None, None
+
+    def _first(key: str) -> float | None:
+        try:
+            return float((d.get(key) or [None])[0])
+        except (TypeError, ValueError):
+            return None
+
+    return (
+        _first("wind_speed_10m_max"),
+        _first("wind_direction_10m_dominant"),
+        _first("temperature_2m_max"),
+        _first("relative_humidity_2m_mean"),
+        _first("pressure_msl_mean"),
+    )
 
 
 _ODDS_SNAPSHOT: dict | None = None
@@ -331,10 +435,16 @@ def build_context(game: dict) -> dict[str, Any]:
     a_full, a_avail = bullpen_fips(away_team_id, gd, season) if away_team_id else (None, None)
 
     ump_name = home_plate_umpire(game_pk)
-    wind_kph, wind_dir = wind_for_game(game["home_team"], gd)
+    wind_kph, wind_dir, temp_c, humidity_pct, pressure_hpa = wind_for_game(
+        game["home_team"], gd
+    )
 
     home_xera, _ = pitcher_xstats(game.get("home_pitcher_id"))
     away_xera, _ = pitcher_xstats(game.get("away_pitcher_id"))
+
+    # Statcast rolling metrics (velo, whiff, hard-hit, K%, BB%)
+    home_sc = pitcher_rolling_statcast(game.get("home_pitcher_id"))
+    away_sc = pitcher_rolling_statcast(game.get("away_pitcher_id"))
 
     # ERA comes from the live schedule fetch, not GameInput anymore.
     home_sp_stats = game.get("home_pitcher_stats") or {}
@@ -359,10 +469,22 @@ def build_context(game: dict) -> dict[str, Any]:
         "umpire_name": ump_name,
         "wind_kph": wind_kph,
         "wind_dir_deg": wind_dir,
+        "temp_c": temp_c,
+        "humidity_pct": humidity_pct,
+        "pressure_hpa": pressure_hpa,
         "home_sp_xera": home_xera,
         "away_sp_xera": away_xera,
         "home_sp_era": home_sp_stats.get("era"),
         "away_sp_era": away_sp_stats.get("era"),
+        # Statcast rolling metrics (velo, whiff, hard-hit, K%, BB%)
+        "home_sp_velo": home_sc.get("velo_avg"),
+        "away_sp_velo": away_sc.get("velo_avg"),
+        "home_sp_whiff": home_sc.get("whiff_pct"),
+        "away_sp_whiff": away_sc.get("whiff_pct"),
+        "home_sp_hard_hit": home_sc.get("hard_hit_pct"),
+        "away_sp_hard_hit": away_sc.get("hard_hit_pct"),
+        "home_sp_k_pct": home_sc.get("k_pct"),
+        "away_sp_k_pct": away_sc.get("k_pct"),
         "market_home_american": home_ml,
         "market_away_american": away_ml,
     }

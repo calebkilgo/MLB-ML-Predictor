@@ -250,9 +250,11 @@ let FILTER = 'all';
 function render(){
   const games = FILTER === 'all' ? ALL_GAMES : ALL_GAMES.filter(g => g.state === FILTER);
 
-  // --- TOP PLAYS: only from upcoming/live games, sorted by EV, +EV only ---
+  // --- TOP PLAYS: only TODAY's upcoming/live games, sorted by EV, +EV only ---
+  // Build today's date string in YYYY-MM-DD (matches MLB API game_date field).
+  const todayStr = new Date().toLocaleDateString('en-CA'); // en-CA gives YYYY-MM-DD
   const candidates = ALL_GAMES
-    .filter(g => g.state !== 'Final')
+    .filter(g => g.state !== 'Final' && g.game_date === todayStr)
     .map(g => ({g, play: bestPlay(g)}))
     .filter(x => x.play && x.play.ev > 0)
     .sort((a, b) => b.play.ev - a.play.ev)

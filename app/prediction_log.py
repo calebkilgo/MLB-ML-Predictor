@@ -11,8 +11,10 @@ at the end of FIELDS to keep old rows readable.
 from __future__ import annotations
 
 import csv
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from threading import Lock
+
+import httpx
 
 from src.config import CFG
 
@@ -168,6 +170,78 @@ def record_games(games: list[dict]) -> dict:
 
         _save(existing)
         return {"new": n_new, "resolved": n_resolved, "total": len(existing)}
+
+
+def resolve_past_games() -> dict:
+    """Retroactive resolution pass: fetch Final scores for any unresolved
+    games whose game_date is strictly before today. Useful after a server
+    restart or downtime that caused us to miss the Final state transition.
+
+    Returns counts of how many games were newly resolved.
+    """
+    today_str = date.today().isoformat()
+    with _LOCK:
+        existing = _load()
+        n_resolved = 0
+        n_checked = 0
+
+        for pk, row in existing.items():
+            if row.get("resolved_at"):
+                continue  # already resolved
+            gd = row.get("game_date", "")
+            if not gd or gd >= today_str:
+                continue  # today or future — wait for the live board
+
+            # Query the MLB API for the game's final state.
+            n_checked += 1
+            try:
+                url = (
+                    f"https://statsapi.mlb.com/api/v1.1/game/{pk}/feed/live"
+                    "?fields=gameData,status,linescore,teams"
+                )
+                r = httpx.get(url, timeout=10.0)
+                r.raise_for_status()
+                data = r.json()
+            except Exception:
+                continue
+
+            gd_data = data.get("gameData", {})
+            status = gd_data.get("status", {})
+            abstract = status.get("abstractGameState", "")
+            if abstract != "Final":
+                continue
+
+            teams = gd_data.get("teams", {})
+            home_name = (teams.get("home") or {}).get("abbreviation", "")
+            away_name = (teams.get("away") or {}).get("abbreviation", "")
+
+            # Get linescore runs
+            ls = data.get("liveData", {}).get("linescore", {}) or {}
+            home_runs = (ls.get("teams") or {}).get("home", {}).get("runs")
+            away_runs = (ls.get("teams") or {}).get("away", {}).get("runs")
+            if home_runs is None or away_runs is None:
+                continue
+
+            try:
+                hs_i, as_i = int(home_runs), int(away_runs)
+            except (TypeError, ValueError):
+                continue
+
+            # Use abbreviations from the row if the live data abbreviation is empty
+            home_team = row.get("home_team", "") or home_name
+            away_team = row.get("away_team", "") or away_name
+            winner = home_team if hs_i > as_i else away_team
+            pick_correct = 1 if winner == row.get("pick_team") else 0
+            row["resolved_at"] = datetime.utcnow().isoformat(timespec="seconds")
+            row["final_home_score"] = hs_i
+            row["final_away_score"] = as_i
+            row["winner_team"] = winner
+            row["pick_correct"] = pick_correct
+            n_resolved += 1
+
+        if n_resolved > 0:
+            _save(existing)
+        return {"checked": n_checked, "resolved": n_resolved, "total": len(existing)}
 
 
 def summary() -> dict:

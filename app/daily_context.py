@@ -13,6 +13,7 @@ by the slowest game's internal fetch chain.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from datetime import date, timedelta
 from typing import Any
@@ -26,58 +27,64 @@ from src.etl.weather import STADIUMS
 
 _CACHE: dict[str, tuple[float, Any]] = {}
 _TTL = 300.0
+_CACHE_LOCK = threading.Lock()
 
 LEAGUE_AVG_WOBA = 0.315
 ABBR_TO_TEAM_ID = {v: k for k, v in TEAM_ID_TO_ABBR.items()}
 
 _XSTATS: pd.DataFrame | None = None
 _ROLLING_STATS: pd.DataFrame | None = None
+_DF_LOCK = threading.Lock()
 
 
 def _cached_get(url: str, headers: dict | None = None) -> dict:
     now = time.time()
-    hit = _CACHE.get(url)
-    if hit and now - hit[0] < _TTL:
-        return hit[1]
+    with _CACHE_LOCK:
+        hit = _CACHE.get(url)
+        if hit and now - hit[0] < _TTL:
+            return hit[1]
     try:
         r = httpx.get(url, timeout=10.0, headers=headers or {})
         r.raise_for_status()
         data = r.json()
     except Exception:
         data = {}
-    _CACHE[url] = (now, data)
+    with _CACHE_LOCK:
+        _CACHE[url] = (now, data)
     return data
 
 
 def _xstats() -> pd.DataFrame:
     global _XSTATS
-    if _XSTATS is not None:
-        return _XSTATS
-    year = date.today().year
-    for y in (year, year - 1):
-        path = CFG.raw_dir / f"statcast_pitchers_{y}.parquet"
-        if path.exists():
-            _XSTATS = pd.read_parquet(path).set_index("mlb_id")
+    with _DF_LOCK:
+        if _XSTATS is not None:
             return _XSTATS
-    _XSTATS = pd.DataFrame(columns=["xwoba", "xera"]).set_index(
-        pd.Index([], name="mlb_id"))
-    return _XSTATS
+        year = date.today().year
+        for y in (year, year - 1):
+            path = CFG.raw_dir / f"statcast_pitchers_{y}.parquet"
+            if path.exists():
+                _XSTATS = pd.read_parquet(path).set_index("mlb_id")
+                return _XSTATS
+        _XSTATS = pd.DataFrame(columns=["xwoba", "xera"]).set_index(
+            pd.Index([], name="mlb_id"))
+        return _XSTATS
 
 
 def _rolling_stats() -> pd.DataFrame:
     global _ROLLING_STATS
-    if _ROLLING_STATS is not None:
-        return _ROLLING_STATS
-    year = date.today().year
-    for y in (year, year - 1):
-        path = CFG.raw_dir / f"statcast_rolling_{y}.parquet"
-        if path.exists():
-            _ROLLING_STATS = pd.read_parquet(path).set_index("mlb_id")
+    with _DF_LOCK:
+        if _ROLLING_STATS is not None:
             return _ROLLING_STATS
-    _ROLLING_STATS = pd.DataFrame(
-        columns=["velo_avg", "whiff_pct", "hard_hit_pct", "k_pct", "bb_pct"]
-    ).set_index(pd.Index([], name="mlb_id"))
-    return _ROLLING_STATS
+        year = date.today().year
+        for y in (year, year - 1):
+            path = CFG.raw_dir / f"statcast_rolling_{y}.parquet"
+            if path.exists():
+                _ROLLING_STATS = pd.read_parquet(path).set_index("mlb_id")
+                return _ROLLING_STATS
+        _ROLLING_STATS = pd.DataFrame(
+            columns=["velo_avg", "whiff_pct", "hard_hit_pct", "k_pct", "bb_pct"]
+        ).set_index(pd.Index([], name="mlb_id"))
+        return _ROLLING_STATS
 
 
 def pitcher_xstats(mlb_id: int | None) -> tuple[float | None, float | None]:

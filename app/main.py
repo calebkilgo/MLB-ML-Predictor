@@ -93,7 +93,7 @@ def _build_board() -> None:
         games = mlb_live.get_schedule(start, end)
         print(f"[board] {len(games)} games, enriching...")
 
-        with ThreadPoolExecutor(max_workers=16) as ex:
+        with ThreadPoolExecutor(max_workers=4) as ex:
             enriched = list(ex.map(_process_game, games))
 
         try:

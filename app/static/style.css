@@ -617,6 +617,17 @@ main#board {
   margin: 0 0.35rem;
 }
 
+.toplive {
+  font-family: var(--fs-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+.toplive .sep { color: var(--line-2); margin: 0 0.35rem; }
+.toplive .score-win { color: var(--fg); font-weight: 700; }
+
+.toppick { flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+
 .topev {
   text-align: right;
   display: flex;

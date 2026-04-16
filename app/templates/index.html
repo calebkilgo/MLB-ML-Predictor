@@ -227,41 +227,106 @@ function card(g, idx){
 }
 
 // ============================================================
-// TOP PLAYS: top 3 by EV across all non-Final games with +EV.
+// TOP PLAYS — locked in at Preview time, live score overlaid.
+//
+// Picks are snapshotted the first time we see today's games
+// in Preview state and stored in localStorage. On every refresh
+// we only update the score/state overlay — the pick, probability,
+// and EV never change once locked.
 // ============================================================
-function topPlayCard(g, rank){
-  const m = g.model || {};
-  const [ac1] = tc(g.away_team);
-  const [hc1] = tc(g.home_team);
-  const best = bestPlay(g);
-  if (!best) return '';
 
-  const pickColor = best.side === 'home' ? hc1 : ac1;
-  const stateText = fmtState(g);
-  const liveDot = g.state === 'Live' ? '<span class="pulse"></span>' : '';
+const _todayStr = new Date().toLocaleDateString('en-CA');
+const _TP_KEY   = 'topPlays_' + _todayStr;
+
+// Each entry: { game_pk, away_team, home_team, away_pitcher, home_pitcher,
+//               pick_team, pick_prob, ev, pick_side }
+let LOCKED_TOP_PLAYS = (() => {
+  try { return JSON.parse(localStorage.getItem(_TP_KEY) || 'null'); }
+  catch(e) { return null; }
+})();
+
+function _tryLockTopPlays(games){
+  if (LOCKED_TOP_PLAYS) return; // already locked for today
+  const preview = games.filter(g => g.state === 'Preview' && g.game_date === _todayStr);
+  if (!preview.length) return; // wait until we see Preview games
+  const candidates = preview
+    .map(g => ({ g, play: bestPlay(g) }))
+    .filter(x => x.play && x.play.ev > 0)
+    .sort((a, b) => b.play.ev - a.play.ev)
+    .slice(0, 3);
+  if (!candidates.length) return;
+  LOCKED_TOP_PLAYS = candidates.map(({ g, play }) => ({
+    game_pk:      g.game_pk,
+    away_team:    g.away_team,
+    home_team:    g.home_team,
+    away_pitcher: g.away_pitcher,
+    home_pitcher: g.home_pitcher,
+    pick_team:    play.team,
+    pick_prob:    play.p,
+    ev:           play.ev,
+    pick_side:    play.side,
+  }));
+  try { localStorage.setItem(_TP_KEY, JSON.stringify(LOCKED_TOP_PLAYS)); }
+  catch(e) {}
+}
+
+function topPlayCard(pick, liveGame, rank){
+  const ac1 = tc(pick.away_team);
+  const hc1 = tc(pick.home_team);
+  const pickColor = pick.pick_side === 'home' ? hc1 : ac1;
+
+  // Live overlay: score + state from current board (pick data never changes)
+  const g = liveGame || {};
+  const stateText = g.game_pk ? fmtState(g) : 'SCHEDULED';
+  const liveDot   = g.state === 'Live' ? '<span class="pulse"></span>' : '';
+
+  // Show live score if available
+  let scoreHtml = '';
+  if (g.state === 'Live' || g.state === 'Final'){
+    const as = g.away_score ?? '–', hs = g.home_score ?? '–';
+    const aWin = g.state==='Final' && Number(g.away_score) > Number(g.home_score);
+    const hWin = g.state==='Final' && Number(g.home_score) > Number(g.away_score);
+    scoreHtml = `<div class="toplive">
+      <span class="${aWin?'score-win':''}">${pick.away_team} ${as}</span>
+      <span class="sep">·</span>
+      <span class="${hWin?'score-win':''}">${pick.home_team} ${hs}</span>
+    </div>`;
+  }
+
+  // Show outcome badge if Final
+  let outcomeBadge = '';
+  if (g.state === 'Final' && g.home_score != null){
+    const winner = Number(g.home_score) > Number(g.away_score) ? g.home_team : g.away_team;
+    const correct = winner === pick.pick_team;
+    outcomeBadge = correct
+      ? `<span class="badge green" style="font-size:0.6rem">✓ WON</span>`
+      : `<span class="badge" style="background:rgba(255,46,82,.15);color:var(--red);border:1px solid rgba(255,46,82,.35);font-size:0.6rem">✗ LOST</span>`;
+  }
 
   return `
     <article class="topcard" style="--pick:${pickColor};--away:${ac1};--home:${hc1};animation-delay:${rank*80}ms">
       <div class="rank">#${rank + 1}</div>
       <div class="topbody">
         <div class="topmatch">
-          <span class="tcode">${g.away_team}</span>
+          <span class="tcode">${pick.away_team}</span>
           <span class="at">@</span>
-          <span class="tcode">${g.home_team}</span>
+          <span class="tcode">${pick.home_team}</span>
           <span class="topstate">${liveDot}${stateText}</span>
         </div>
         <div class="toppick">
           <span class="lbl">PICK</span>
-          <span class="picknm">${best.team}</span>
-          <span class="pickpct mono">${pct(best.p)}</span>
+          <span class="picknm">${pick.pick_team}</span>
+          <span class="pickpct mono">${pct(pick.pick_prob)}</span>
+          ${outcomeBadge}
         </div>
+        ${scoreHtml}
         <div class="toppitchers">
-          ${g.away_pitcher || 'TBD'} <span class="sep">vs</span> ${g.home_pitcher || 'TBD'}
+          ${pick.away_pitcher || 'TBD'} <span class="sep">vs</span> ${pick.home_pitcher || 'TBD'}
         </div>
       </div>
       <div class="topev">
         <div class="evlabel">EXPECTED VALUE</div>
-        <div class="evnum">${fmtEV(best.ev)}</div>
+        <div class="evnum">${fmtEV(pick.ev)}</div>
         <div class="evsub mono">vs -110</div>
       </div>
     </article>
@@ -274,27 +339,24 @@ let FILTER = 'all';
 function render(){
   const games = FILTER === 'all' ? ALL_GAMES : ALL_GAMES.filter(g => g.state === FILTER);
 
-  // --- TOP PLAYS: only TODAY's upcoming/live games, sorted by EV, +EV only ---
-  // Build today's date string in YYYY-MM-DD (matches MLB API game_date field).
-  const todayStr = new Date().toLocaleDateString('en-CA'); // en-CA gives YYYY-MM-DD
-  const candidates = ALL_GAMES
-    .filter(g => g.state !== 'Final' && g.game_date === todayStr)
-    .map(g => ({g, play: bestPlay(g)}))
-    .filter(x => x.play && x.play.ev > 0)
-    .sort((a, b) => b.play.ev - a.play.ev)
-    .slice(0, 3);
+  // Try to lock today's top plays from Preview games (no-op once locked).
+  _tryLockTopPlays(ALL_GAMES);
+
+  // Build a game_pk lookup so we can overlay live state on locked picks.
+  const byPk = {};
+  ALL_GAMES.forEach(g => { byPk[g.game_pk] = g; });
 
   let topHtml = '';
-  if (FILTER === 'all' && candidates.length > 0){
+  if (FILTER === 'all' && LOCKED_TOP_PLAYS && LOCKED_TOP_PLAYS.length > 0){
     topHtml = `<section class="group topgroup">
       <div class="grouphead">
-        <h2>TOP PLAYS</h2>
-        <span class="gcount">${String(candidates.length).padStart(2,'0')}</span>
+        <h2>TODAY'S TOP PLAYS</h2>
+        <span class="gcount">${String(LOCKED_TOP_PLAYS.length).padStart(2,'0')}</span>
         <div class="line"></div>
-        <span class="groupnote">SORTED BY +EV VS -110</span>
+        <span class="groupnote">LOCKED AT OPEN · SORTED BY +EV VS -110</span>
       </div>
       <div class="topgrid">
-        ${candidates.map((x, i) => topPlayCard(x.g, i)).join('')}
+        ${LOCKED_TOP_PLAYS.map((pick, i) => topPlayCard(pick, byPk[pick.game_pk], i)).join('')}
       </div>
     </section>`;
   }

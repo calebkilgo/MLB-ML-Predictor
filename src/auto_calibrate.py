@@ -42,8 +42,8 @@ WEIGHTS_PATH = Path(__file__).parent / "adjustments" / "weights.py"
 CAL_DIR = CFG.data_dir / "calibration"
 HISTORY_PATH = CAL_DIR / "history.json"
 
-MIN_GAMES = 50           # won't run below this many resolved games
-MIN_NEW_SINCE_CAL = 20   # won't re-run unless this many new games since last run
+MIN_GAMES = 20           # won't run below this many resolved games
+MIN_NEW_SINCE_CAL = 10   # won't re-run unless this many new games since last run
 MIN_HOURS_BETWEEN = 12   # won't run more frequently than this
 
 DELTA_COLS = [

@@ -122,7 +122,13 @@ def _compute_row(g: dict) -> dict | None:
 
 
 def record_games(games: list[dict]) -> dict:
-    """Upsert rows for each game. Creates Preview rows, resolves Final rows."""
+    """Upsert rows for each game. Creates Preview rows, resolves Final rows.
+
+    Retroactive mode: if a Final game has model data but no existing log entry
+    (e.g. Preview was missed due to a restart), the entry is created and
+    immediately resolved in the same pass.  Live/in-progress games are skipped
+    for new entries to avoid using mid-game pitcher states.
+    """
     with _LOCK:
         existing = _load()
         n_new = 0
@@ -134,17 +140,20 @@ def record_games(games: list[dict]) -> dict:
                 continue
             state = g.get("state", "") or ""
 
-            # New game: only lock in the prediction if we're seeing it
-            # before first pitch. Games we miss in Preview are ignored.
             if pk not in existing:
-                if state != "Preview":
+                # Allow Preview (prospective) and Final (retroactive — missed
+                # Preview window, e.g. after a redeploy).  Skip Live to avoid
+                # using in-game pitcher changes as pre-game inputs.
+                if state not in ("Preview", "Final"):
                     continue
                 row = _compute_row(g)
                 if row is None:
                     continue
                 existing[pk] = row
                 n_new += 1
-                continue
+                if state == "Preview":
+                    continue
+                # Final: fall through to resolve immediately below.
 
             # Existing row: resolve once the game is Final.
             row = existing[pk]

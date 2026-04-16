@@ -475,6 +475,28 @@ def index(request: Request) -> Response:
     return templates.TemplateResponse(request, "index.html", {})
 
 
+@app.get("/performance", response_class=HTMLResponse)
+def performance(request: Request) -> Response:
+    gate = _gate(request)
+    if gate is not None:
+        return gate
+    return templates.TemplateResponse(request, "performance.html", {})
+
+
+@app.get("/api/performance")
+def api_performance(request: Request) -> Response:
+    gate = _gate(request)
+    if gate is not None:
+        return gate
+    rows = prediction_log._load()
+    resolved = sorted(
+        [r for r in rows.values() if r.get("resolved_at")],
+        key=lambda r: r.get("resolved_at", ""),
+        reverse=True,
+    )
+    return JSONResponse({"stats": prediction_log.summary(), "games": resolved})
+
+
 @app.get("/api/games")
 def api_games(request: Request) -> Response:
     gate = _gate(request)

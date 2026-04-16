@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLB PREDICT · Performance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+/* ── page nav ── */
+.pagenav {
+  display: flex; gap: 0; padding: 0 1.8rem;
+  background: var(--bg-2); border-bottom: 1px solid var(--line);
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.pagenav::-webkit-scrollbar { display: none; }
+.navtab {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.75rem 1.1rem;
+  font-family: var(--fs-mono); font-size: 0.68rem; letter-spacing: 0.16em;
+  color: var(--fg-mute); text-decoration: none;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap; transition: color 0.15s, border-color 0.15s;
+}
+.navtab:hover { color: var(--fg); }
+.navtab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.navtab .navdot { width:7px; height:7px; border-radius:50%; background:currentColor; display:inline-block; }
+
+/* ── stat strip ── */
+.statstrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.statbox {
+  background: var(--bg-2);
+  padding: 1.2rem 1.6rem;
+  display: flex; flex-direction: column; gap: 0.35rem;
+}
+.statbox .slabel {
+  font-family: var(--fs-mono); font-size: 0.56rem;
+  letter-spacing: 0.2em; color: var(--fg-mute);
+}
+.statbox .sval {
+  font-family: var(--fs-display); font-size: 2.1rem;
+  line-height: 1; letter-spacing: 0.03em; color: var(--fg);
+}
+.statbox .sval.green { color: var(--accent); }
+.statbox .sval.amber { color: var(--amber); }
+.statbox .sval.red   { color: var(--red); }
+.statbox .ssub {
+  font-family: var(--fs-mono); font-size: 0.62rem;
+  color: var(--fg-mute); letter-spacing: 0.1em;
+}
+
+/* ── calibration buckets ── */
+.cal-section {
+  max-width: 1500px; margin: 0 auto;
+  padding: 1.8rem 1.8rem 0;
+}
+.cal-section h3 {
+  font-family: var(--fs-display); font-size: 1.1rem;
+  letter-spacing: 0.1em; color: var(--fg-dim);
+  margin-bottom: 1rem;
+}
+.buckets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+.bucket {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  padding: 1rem 1.1rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.bucket .blabel {
+  font-family: var(--fs-mono); font-size: 0.62rem;
+  letter-spacing: 0.14em; color: var(--fg-mute);
+}
+.bucket .bval {
+  font-family: var(--fs-display); font-size: 1.9rem;
+  line-height: 1; color: var(--fg);
+}
+.bucket .bbar-wrap {
+  height: 4px; background: var(--line); border-radius: 2px; overflow: hidden;
+}
+.bucket .bbar { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+.bucket .bsub {
+  font-family: var(--fs-mono); font-size: 0.58rem;
+  color: var(--fg-mute); letter-spacing: 0.1em;
+}
+
+/* ── log table section ── */
+.log-section {
+  max-width: 1500px; margin: 0 auto;
+  padding: 0 1.8rem 4rem;
+}
+.log-header {
+  display: flex; align-items: baseline; gap: 0.8rem;
+  margin-bottom: 1rem; flex-wrap: wrap;
+}
+.log-header h3 {
+  font-family: var(--fs-display); font-size: 1.1rem;
+  letter-spacing: 0.1em; color: var(--fg-dim);
+}
+.log-header .gcount {
+  font-family: var(--fs-mono); font-size: 0.7rem;
+  color: var(--accent); background: rgba(0,255,148,0.08);
+  border: 1px solid rgba(0,255,148,0.25);
+  padding: 0.1rem 0.5rem; letter-spacing: 0.1em;
+}
+.log-header .hline {
+  flex: 1; height: 1px; min-width: 40px;
+  background: linear-gradient(90deg, var(--line-2), transparent);
+}
+.log-controls {
+  display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;
+}
+.log-controls input[type=text] {
+  background: var(--panel); border: 1px solid var(--line-2);
+  color: var(--fg); font-family: var(--fs-mono); font-size: 0.68rem;
+  letter-spacing: 0.1em; padding: 0.42rem 0.8rem;
+  border-radius: var(--chip-radius); outline: none; width: 200px;
+}
+.log-controls input[type=text]::placeholder { color: var(--fg-mute); }
+.log-controls input[type=text]:focus { border-color: var(--fg-mute); }
+.fchip {
+  background: transparent; color: var(--fg-dim);
+  border: 1px solid var(--line-2); border-radius: var(--chip-radius);
+  padding: 0.38rem 0.8rem; font-family: var(--fs-mono);
+  font-size: 0.64rem; letter-spacing: 0.14em; cursor: pointer;
+  transition: all 0.15s; white-space: nowrap;
+}
+.fchip:hover { color: var(--fg); border-color: var(--fg-mute); background: var(--panel); }
+.fchip.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+}
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.78rem;
+}
+thead tr {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line-2);
+}
+thead th {
+  font-family: var(--fs-mono); font-size: 0.58rem;
+  letter-spacing: 0.16em; color: var(--fg-mute);
+  padding: 0.75rem 0.9rem; text-align: left;
+  white-space: nowrap; font-weight: 500;
+  cursor: pointer; user-select: none;
+  transition: color 0.15s;
+}
+thead th:hover { color: var(--fg); }
+thead th.sort-asc::after  { content: ' ▲'; color: var(--accent); }
+thead th.sort-desc::after { content: ' ▼'; color: var(--accent); }
+tbody tr {
+  border-bottom: 1px solid var(--line);
+  transition: background 0.12s;
+}
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--panel); }
+tbody td {
+  padding: 0.7rem 0.9rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.td-date    { color: var(--fg-mute); font-family: var(--fs-mono); font-size: 0.68rem; letter-spacing: 0.06em; }
+.td-matchup { font-family: var(--fs-display); font-size: 1.05rem; letter-spacing: 0.03em; color: var(--fg); }
+.td-sp      { color: var(--fg-mute); font-size: 0.7rem; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.td-pick    { font-family: var(--fs-display); font-size: 1.05rem; color: var(--accent); letter-spacing: 0.03em; }
+.td-prob    { font-family: var(--fs-mono); color: var(--fg); }
+.td-ev      { font-family: var(--fs-mono); }
+.td-ev.pos  { color: var(--accent); }
+.td-ev.neg  { color: var(--red); }
+.td-score   { font-family: var(--fs-mono); font-size: 0.8rem; color: var(--fg-dim); letter-spacing: 0.05em; }
+.td-winner  { font-family: var(--fs-display); font-size: 1.05rem; letter-spacing: 0.03em; color: var(--fg-dim); }
+.td-result  {
+  font-family: var(--fs-mono); font-size: 0.72rem; font-weight: 700;
+  letter-spacing: 0.1em; text-align: center;
+}
+.td-result.win { color: var(--accent); }
+.td-result.loss { color: var(--red); }
+
+.no-data {
+  padding: 4rem 1rem; text-align: center;
+  font-family: var(--fs-mono); font-size: 0.72rem;
+  letter-spacing: 0.2em; color: var(--fg-mute);
+}
+
+/* pagination */
+.pager {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.8rem 0.9rem;
+  background: var(--panel-2); border-top: 1px solid var(--line);
+  font-family: var(--fs-mono); font-size: 0.62rem; letter-spacing: 0.1em;
+  color: var(--fg-mute); gap: 1rem; flex-wrap: wrap;
+}
+.pager-btns { display: flex; gap: 0.4rem; }
+.pager-btn {
+  background: var(--panel); border: 1px solid var(--line-2);
+  color: var(--fg-dim); padding: 0.3rem 0.7rem;
+  font-family: var(--fs-mono); font-size: 0.62rem; letter-spacing: 0.1em;
+  cursor: pointer; border-radius: 2px; transition: all 0.15s;
+}
+.pager-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-mute); }
+.pager-btn:disabled { opacity: 0.35; cursor: default; }
+
+@media (max-width: 720px) {
+  .statstrip { grid-template-columns: repeat(2, 1fr); }
+  .statbox { padding: 1rem 1.1rem; }
+  .statbox .sval { font-size: 1.65rem; }
+  .cal-section, .log-section { padding-left: 1rem; padding-right: 1rem; }
+  .buckets { grid-template-columns: repeat(2, 1fr); }
+  .log-controls input[type=text] { width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<div class="noise"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">
+      <span class="dot"></span>
+      <span class="mark">MLB</span><span class="mark2">/PREDICT</span>
+    </div>
+    <div class="tagline">MODEL PERFORMANCE · PREDICTION LOG · CALIBRATION</div>
+  </div>
+  <div class="meta">
+    <div class="metaitem"><span class="k">DATE</span><span class="v" id="hdate">—</span></div>
+    <div class="metaitem"><span class="k">RESOLVED</span><span class="v" id="hresolved">—</span></div>
+    <div class="metaitem"><span class="k">UPDATED</span><span class="v" id="hupdated">—</span></div>
+  </div>
+</header>
+
+<nav class="pagenav">
+  <a class="navtab" href="/"><span class="navdot"></span>DAILY BOARD</a>
+  <a class="navtab active" href="/performance"><span class="navdot"></span>PERFORMANCE</a>
+</nav>
+
+<!-- stat strip -->
+<div class="statstrip" id="statstrip">
+  <div class="statbox"><div class="slabel">LOADING</div><div class="sval">—</div></div>
+</div>
+
+<!-- calibration buckets -->
+<section class="cal-section">
+  <h3>CALIBRATION BY CONFIDENCE</h3>
+  <div class="buckets" id="buckets">
+    <div class="bucket"><div class="blabel">LOADING…</div></div>
+  </div>
+
+  <h3>GAME LOG</h3>
+</section>
+
+<!-- log table -->
+<section class="log-section">
+  <div class="log-header">
+    <div class="gcount" id="logcount">0</div>
+    <div class="hline"></div>
+    <span style="font-family:var(--fs-mono);font-size:0.6rem;letter-spacing:0.16em;color:var(--fg-mute)">SORTED NEWEST FIRST</span>
+  </div>
+
+  <div class="log-controls">
+    <input type="text" id="search" placeholder="SEARCH TEAM OR PITCHER…">
+    <button class="fchip active" data-result="all">ALL</button>
+    <button class="fchip" data-result="win">CORRECT</button>
+    <button class="fchip" data-result="loss">INCORRECT</button>
+    <button class="fchip" data-result="ev">+EV ONLY</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-col="game_date">DATE</th>
+          <th data-col="matchup">MATCHUP</th>
+          <th data-col="sp">STARTERS</th>
+          <th data-col="pick_team">PICK</th>
+          <th data-col="pick_prob">PROB</th>
+          <th data-col="ev">EV vs -110</th>
+          <th data-col="score">SCORE</th>
+          <th data-col="winner_team">WINNER</th>
+          <th data-col="pick_correct">RESULT</th>
+        </tr>
+      </thead>
+      <tbody id="logtbody">
+        <tr><td colspan="9" class="no-data">LOADING…</td></tr>
+      </tbody>
+    </table>
+    <div class="pager" id="pager" style="display:none">
+      <span id="pager-info">— of —</span>
+      <div class="pager-btns">
+        <button class="pager-btn" id="prev-btn">◀ PREV</button>
+        <button class="pager-btn" id="next-btn">NEXT ▶</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footbar">
+  RESEARCH &amp; EDUCATIONAL USE ONLY · NO GUARANTEE OF PROFIT · EV COMPUTED VS STANDARD -110 JUICE (52.38% BREAK-EVEN)
+</footer>
+
+<script>
+const TEAM_COLORS = {
+  ARI:['#A71930','#E3D4AD'], ATL:['#CE1141','#13274F'], BAL:['#DF4601','#000000'],
+  BOS:['#BD3039','#0C2340'], CHC:['#0E3386','#CC3433'], CHW:['#27251F','#C4CED4'],
+  CIN:['#C6011F','#000000'], CLE:['#E31937','#0C2340'], COL:['#33006F','#C4CED4'],
+  DET:['#0C2340','#FA4616'], HOU:['#002D62','#EB6E1F'], KCR:['#004687','#BD9B60'],
+  LAA:['#BA0021','#003263'], LAD:['#005A9C','#EF3E42'], MIA:['#00A3E0','#EF3340'],
+  MIL:['#12284B','#FFC52F'], MIN:['#002B5C','#D31145'], NYM:['#002D72','#FF5910'],
+  NYY:['#003087','#E4002C'], OAK:['#003831','#EFB21E'], PHI:['#E81828','#002D72'],
+  PIT:['#FDB827','#27251F'], SDP:['#2F241D','#FFC425'], SEA:['#0C2C56','#005C5C'],
+  SFG:['#FD5A1E','#27251F'], STL:['#C41E3A','#0C2340'], TBR:['#092C5C','#8FBCE6'],
+  TEX:['#003278','#C0111F'], TOR:['#134A8E','#E8291C'], WSN:['#AB0003','#14225A'],
+};
+function tc(a){ return (TEAM_COLORS[a]||['#555','#888'])[0]; }
+
+function pct(x, d=1){ return x == null ? '—' : (Number(x)*100).toFixed(d)+'%'; }
+function evFmt(x){
+  if (x == null || x === '') return '—';
+  const v = Number(x); const s = v>=0?'+':'';
+  return s+(v*100).toFixed(1)+'%';
+}
+function evAt110(p){ return p*(100/110)-(1-p); }
+
+// ── state ──
+let ALL_ROWS = [];
+let FILTERED = [];
+let SORT_COL = 'game_date';
+let SORT_DIR = 'desc';
+let RESULT_FILTER = 'all';
+let SEARCH = '';
+let PAGE = 0;
+const PAGE_SIZE = 50;
+
+// ── stats strip ──
+function renderStats(s){
+  if (!s || !s.n_resolved){
+    document.getElementById('statstrip').innerHTML =
+      `<div class="statbox"><div class="slabel">RESOLVED GAMES</div><div class="sval">0</div><div class="ssub">NO DATA YET</div></div>`;
+    return;
+  }
+  const wr = s.overall_win_rate;
+  const correct = Math.round(wr * s.n_resolved);
+  const wrong = s.n_resolved - correct;
+  const roi = s.pos_ev_roi_at_110;
+  const roiColor = roi == null ? '' : roi >= 0 ? 'green' : 'red';
+  const roiStr = roi == null ? '—' : (roi>=0?'+':'')+(roi*100).toFixed(1)+'%';
+
+  document.getElementById('statstrip').innerHTML = `
+    <div class="statbox">
+      <div class="slabel">RECORD</div>
+      <div class="sval ${wr >= 0.52 ? 'green' : wr >= 0.50 ? 'amber' : 'red'}">${correct}-${wrong}</div>
+      <div class="ssub">${s.n_resolved} RESOLVED GAMES</div>
+    </div>
+    <div class="statbox">
+      <div class="slabel">WIN RATE</div>
+      <div class="sval ${wr >= 0.52 ? 'green' : wr >= 0.50 ? 'amber' : 'red'}">${pct(wr, 1)}</div>
+      <div class="ssub">BREAK-EVEN 52.4%</div>
+    </div>
+    <div class="statbox">
+      <div class="slabel">AVG PICK PROB</div>
+      <div class="sval">${pct(s.mean_predicted_prob, 1)}</div>
+      <div class="ssub">MODEL CONFIDENCE</div>
+    </div>
+    <div class="statbox">
+      <div class="slabel">+EV ROI vs -110</div>
+      <div class="sval ${roiColor}">${roiStr}</div>
+      <div class="ssub">${s.pos_ev_count || 0} +EV PICKS</div>
+    </div>
+  `;
+  document.getElementById('hresolved').textContent = String(s.n_resolved).padStart(2,'0');
+}
+
+// ── calibration buckets ──
+function renderBuckets(s){
+  if (!s || !s.buckets){ document.getElementById('buckets').innerHTML = '<div class="bucket"><div class="blabel">NOT ENOUGH DATA</div></div>'; return; }
+  const b = s.buckets;
+  const BREAK_EVEN = 0.5238;
+  let html = '';
+  for (const [label, data] of Object.entries(b)){
+    const wr = data.win_rate;
+    const n  = data.n;
+    if (n === 0){
+      html += `<div class="bucket">
+        <div class="blabel">${label}</div>
+        <div class="bval" style="color:var(--fg-mute)">—</div>
+        <div class="bbar-wrap"><div class="bbar" style="width:0%;background:var(--line-2)"></div></div>
+        <div class="bsub">0 GAMES</div>
+      </div>`; continue;
+    }
+    const col = wr >= 0.55 ? 'var(--accent)' : wr >= BREAK_EVEN ? 'var(--amber)' : 'var(--red)';
+    const barW = Math.min(100, (wr / 0.70) * 100).toFixed(1);
+    html += `<div class="bucket">
+      <div class="blabel">PICK PROB ${label}</div>
+      <div class="bval" style="color:${col}">${pct(wr, 1)}</div>
+      <div class="bbar-wrap"><div class="bbar" style="width:${barW}%;background:${col}"></div></div>
+      <div class="bsub">${n} GAMES · WIN RATE</div>
+    </div>`;
+  }
+  document.getElementById('buckets').innerHTML = html;
+}
+
+// ── table ──
+function applyFilters(){
+  let rows = ALL_ROWS.slice();
+  if (SEARCH){
+    const q = SEARCH.toLowerCase();
+    rows = rows.filter(r =>
+      (r.home_team||'').toLowerCase().includes(q) ||
+      (r.away_team||'').toLowerCase().includes(q) ||
+      (r.home_pitcher||'').toLowerCase().includes(q) ||
+      (r.away_pitcher||'').toLowerCase().includes(q) ||
+      (r.pick_team||'').toLowerCase().includes(q)
+    );
+  }
+  if (RESULT_FILTER === 'win')  rows = rows.filter(r => String(r.pick_correct) === '1');
+  if (RESULT_FILTER === 'loss') rows = rows.filter(r => String(r.pick_correct) === '0');
+  if (RESULT_FILTER === 'ev')   rows = rows.filter(r => Number(r.ev||0) > 0);
+
+  rows.sort((a, b) => {
+    let va = a[SORT_COL] ?? '', vb = b[SORT_COL] ?? '';
+    if (!isNaN(Number(va)) && !isNaN(Number(vb))){ va = Number(va); vb = Number(vb); }
+    if (va < vb) return SORT_DIR === 'asc' ? -1 : 1;
+    if (va > vb) return SORT_DIR === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  FILTERED = rows;
+  PAGE = 0;
+  renderTable();
+}
+
+function renderTable(){
+  const start = PAGE * PAGE_SIZE;
+  const slice = FILTERED.slice(start, start + PAGE_SIZE);
+  const tbody = document.getElementById('logtbody');
+  document.getElementById('logcount').textContent =
+    String(FILTERED.length).padStart(2,'0');
+
+  if (!slice.length){
+    tbody.innerHTML = `<tr><td colspan="9" class="no-data">NO GAMES MATCH FILTER</td></tr>`;
+    document.getElementById('pager').style.display = 'none';
+    return;
+  }
+
+  tbody.innerHTML = slice.map(r => {
+    const correct = String(r.pick_correct) === '1';
+    const incorrect = String(r.pick_correct) === '0';
+    const evVal = Number(r.ev || 0);
+    const evClass = evVal >= 0 ? 'pos' : 'neg';
+    const pickColor = tc(r.pick_team);
+    const sp = [r.away_pitcher, r.home_pitcher].filter(Boolean).join(' vs ') || '—';
+
+    // score: away - home
+    const scoreStr = (r.final_away_score !== '' && r.final_home_score !== '')
+      ? `${r.final_away_score}–${r.final_home_score}`
+      : '—';
+
+    return `<tr>
+      <td class="td-date">${(r.game_date||'').slice(5)}</td>
+      <td class="td-matchup">
+        <span style="color:${tc(r.away_team)}">${r.away_team||'—'}</span>
+        <span style="color:var(--fg-mute);font-size:0.8rem;font-family:var(--fs-body)"> @ </span>
+        <span style="color:${tc(r.home_team)}">${r.home_team||'—'}</span>
+      </td>
+      <td class="td-sp">${sp}</td>
+      <td class="td-pick" style="color:${pickColor}">${r.pick_team||'—'}</td>
+      <td class="td-prob">${pct(r.pick_prob)}</td>
+      <td class="td-ev ${evClass}">${evFmt(r.ev)}</td>
+      <td class="td-score">${scoreStr}</td>
+      <td class="td-winner" style="color:${tc(r.winner_team)}">${r.winner_team||'—'}</td>
+      <td class="td-result ${correct?'win':incorrect?'loss':''}">
+        ${correct ? '✓ CORRECT' : incorrect ? '✗ WRONG' : '—'}
+      </td>
+    </tr>`;
+  }).join('');
+
+  // pager
+  const totalPages = Math.ceil(FILTERED.length / PAGE_SIZE);
+  if (totalPages > 1){
+    document.getElementById('pager').style.display = 'flex';
+    document.getElementById('pager-info').textContent =
+      `${start+1}–${Math.min(start+PAGE_SIZE, FILTERED.length)} OF ${FILTERED.length}`;
+    document.getElementById('prev-btn').disabled = PAGE === 0;
+    document.getElementById('next-btn').disabled = PAGE >= totalPages - 1;
+  } else {
+    document.getElementById('pager').style.display = 'none';
+  }
+}
+
+// ── sort headers ──
+document.querySelectorAll('thead th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (SORT_COL === col){
+      SORT_DIR = SORT_DIR === 'desc' ? 'asc' : 'desc';
+    } else {
+      SORT_COL = col; SORT_DIR = 'desc';
+    }
+    document.querySelectorAll('thead th').forEach(h => h.className = '');
+    th.className = 'sort-' + SORT_DIR;
+    applyFilters();
+  });
+});
+// mark initial sort column
+document.querySelector(`thead th[data-col="${SORT_COL}"]`).className = 'sort-' + SORT_DIR;
+
+// ── result filter chips ──
+document.querySelectorAll('.fchip[data-result]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.fchip[data-result]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    RESULT_FILTER = btn.dataset.result;
+    applyFilters();
+  });
+});
+
+// ── search ──
+document.getElementById('search').addEventListener('input', e => {
+  SEARCH = e.target.value.trim();
+  applyFilters();
+});
+
+// ── pager buttons ──
+document.getElementById('prev-btn').addEventListener('click', () => { PAGE--; renderTable(); window.scrollTo(0,0); });
+document.getElementById('next-btn').addEventListener('click', () => { PAGE++; renderTable(); window.scrollTo(0,0); });
+
+// ── load ──
+async function load(){
+  try {
+    const r = await fetch('/api/performance');
+    const j = await r.json();
+    const s = j.stats || {};
+    ALL_ROWS = j.games || [];
+
+    renderStats(s);
+    renderBuckets(s);
+    applyFilters();
+
+    const today = new Date();
+    document.getElementById('hdate').textContent =
+      today.toLocaleDateString([], {month:'short', day:'2-digit', year:'numeric'}).toUpperCase();
+    document.getElementById('hupdated').textContent =
+      today.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  } catch(e) {
+    document.getElementById('logtbody').innerHTML =
+      `<tr><td colspan="9" class="no-data">ERROR: ${e.message}</td></tr>`;
+  }
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

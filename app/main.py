@@ -420,6 +420,20 @@ def admin_revoke(request: Request, kid: str = Form(...)) -> Response:
     return RedirectResponse(url="/admin", status_code=302)
 
 
+@app.get("/api/admin/log")
+def api_admin_log(request: Request) -> Response:
+    """Download the raw prediction log CSV. Requires admin auth."""
+    if not _admin_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from src.config import CFG
+    log_path = CFG.data_dir / "predictions" / "log.csv"
+    if not log_path.exists():
+        return JSONResponse({"error": "log.csv not found — no games logged yet"})
+    content = log_path.read_text(encoding="utf-8")
+    return Response(content, media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=log.csv"})
+
+
 @app.post("/api/admin/calibrate")
 def api_admin_calibrate(request: Request) -> Response:
     """Force an immediate calibration pass regardless of thresholds.

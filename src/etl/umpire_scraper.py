@@ -8,16 +8,24 @@ data/raw/umpire_bias.json and reloaded by src/adjustments/umpire.py.
 Schedule: call `refresh_umpire_bias()` once per day (e.g., from the
 nightly maintenance loop in app/main.py).
 
-Data source: umpscorecards.com/umpires — free, no auth required.
-We scrape the HTML table of season totals (called strikes above average,
-runs per game etc.) rather than relying on the hardcoded table in weights.py.
+Data source: umpscorecards.com/api/umpires?year=YYYY — free JSON API.
+
+Run bias formula:
+  run_bias = -sign(accuracy_above_x_wmean) * total_run_impact_mean * 0.10
+
+  - total_run_impact_mean: unsigned magnitude of run impact per game
+  - accuracy_above_x_wmean: signed accuracy vs expectation; negative =
+    looser zone (more balls called, more walks) = more runs; positive =
+    tighter / more accurate zone = fewer runs.
+  - 0.10 scale maps the impact range (~1.0–2.0) to our ±0.25 target range.
 """
 from __future__ import annotations
 
 import json
 import logging
-import re
+import math
 import time
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -29,10 +37,12 @@ logger = logging.getLogger(__name__)
 _BIAS_PATH = CFG.raw_dir / "umpire_bias.json"
 _TTL_SECONDS = 18 * 3600  # refresh at most once every 18 hours
 
-# Base URL for the umpire season-stats page.
-_BASE_URL = "https://umpscorecards.com/umpires/"
+_API_URL = "https://umpscorecards.com/api/umpires"
 
-# Fallback hardcoded values (from weights.py) used when scraping fails.
+# Minimum games threshold — ignore umpires with very few tracked games.
+_MIN_GAMES = 10
+
+# Fallback hardcoded values used when the API is unavailable.
 _FALLBACK: dict[str, float] = {
     "Angel Hernandez": +0.25,
     "Laz Diaz":        +0.20,
@@ -46,55 +56,37 @@ _FALLBACK: dict[str, float] = {
 }
 
 
-def _parse_umpire_table(html: str) -> dict[str, float]:
-    """Parse the umpire stats table from the HTML.
+def _parse_api_response(data: dict) -> dict[str, float]:
+    """Parse the /api/umpires JSON response into {name: run_bias}.
 
-    Returns {umpire_name: run_bias_per_game} where positive = more runs.
-    We approximate run_bias from the 'favor_home' or 'csaa' (called strikes
-    above average) columns.  CSAA of +10 ≈ +0.1 runs/game.
+    The API returns {"rows": [...]} where each record has:
+      - umpire: str
+      - n: int (games umpired)
+      - accuracy_above_x_wmean: float (signed; negative = looser zone)
+      - total_run_impact_mean: float (unsigned magnitude of run impact/game)
     """
-    # Look for JSON data embedded in the page (the site uses a JS table).
-    # Pattern: umpire name + csaa or raa (runs above average) values.
     bias: dict[str, float] = {}
-
-    # Try to find embedded JSON data array
-    json_match = re.search(
-        r'var\s+(?:umpireData|tableData|data)\s*=\s*(\[.*?\]);',
-        html, re.DOTALL
-    )
-    if json_match:
+    rows = data.get("rows") or (data if isinstance(data, list) else [])
+    for rec in rows:
+        name = (rec.get("umpire") or "").strip()
+        if not name:
+            continue
+        n = int(rec.get("n") or 0)
+        if n < _MIN_GAMES:
+            continue
+        acc = rec.get("accuracy_above_x_wmean")
+        impact = rec.get("total_run_impact_mean")
+        if acc is None or impact is None:
+            continue
         try:
-            records = json.loads(json_match.group(1))
-            for rec in records:
-                name = rec.get("name") or rec.get("umpire") or ""
-                # csaa: called strikes above average (positive = tight zone)
-                # Tight zone = fewer called strikes = pitchers get less help
-                # = more walks/HBPs = more runs allowed. So flip sign.
-                csaa = rec.get("csaa") or rec.get("called_strikes_above_avg") or 0
-                # Some tables have 'favor' as runs/game directly
-                raa = rec.get("raa") or rec.get("runs_above_avg") or 0
-                if name:
-                    # Prefer raa if available; otherwise estimate from csaa.
-                    # Empirical: 10 CSAA ≈ 0.1 run/game (based on historical data)
-                    run_bias = float(raa) if raa else -float(csaa) * 0.010
-                    bias[name.strip()] = round(run_bias, 3)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass
-
-    # Fallback: parse simple HTML table rows
-    if not bias:
-        # Match rows like: <td>Ángel Hernández</td>...<td>+0.23</td>
-        rows = re.findall(
-            r'<tr[^>]*>.*?<td[^>]*>([A-Za-záéíóúÁÉÍÓÚñÑ\s\.\-]+)</td>'
-            r'.*?<td[^>]*>([-+]?\d+\.?\d*)</td>',
-            html, re.DOTALL
-        )
-        for name, val in rows:
-            try:
-                bias[name.strip()] = float(val)
-            except ValueError:
-                pass
-
+            acc_f = float(acc)
+            impact_f = float(impact)
+        except (TypeError, ValueError):
+            continue
+        # direction: negative accuracy → more runs (positive bias)
+        direction = -1.0 if acc_f < 0 else (1.0 if acc_f > 0 else 0.0)
+        run_bias = direction * impact_f * 0.10
+        bias[name] = round(run_bias, 3)
     return bias
 
 
@@ -106,7 +98,7 @@ def refresh_umpire_bias(force: bool = False) -> dict[str, float]:
     """
     _BIAS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    # Check cache freshness
+    # Check cache freshness.
     if not force and _BIAS_PATH.exists():
         age = time.time() - _BIAS_PATH.stat().st_mtime
         if age < _TTL_SECONDS:
@@ -115,22 +107,27 @@ def refresh_umpire_bias(force: bool = False) -> dict[str, float]:
             except Exception:
                 pass
 
+    year = date.today().year
+    url = f"{_API_URL}?year={year}"
+
     try:
-        resp = httpx.get(_BASE_URL, timeout=15.0,
+        resp = httpx.get(url, timeout=15.0,
                          headers={"User-Agent": "mlb-predict/1.0"})
         resp.raise_for_status()
-        bias = _parse_umpire_table(resp.text)
+        data = resp.json()
+        bias = _parse_api_response(data)
         if bias:
-            logger.info("[umpire_scraper] fetched %d umpire biases", len(bias))
+            logger.info("[umpire_scraper] fetched %d umpire biases for %d",
+                        len(bias), year)
             _BIAS_PATH.write_text(json.dumps(bias, indent=2))
             return bias
         else:
-            logger.warning("[umpire_scraper] parsed 0 umpires — page format may "
-                           "have changed; using fallback")
+            logger.warning("[umpire_scraper] parsed 0 umpires for %d "
+                           "— using fallback", year)
     except Exception as e:
         logger.warning("[umpire_scraper] fetch failed (%s); using fallback", e)
 
-    # Write fallback so we don't hammer the site on every game
+    # Write fallback so we don't hammer the site on every board build.
     _BIAS_PATH.write_text(json.dumps(_FALLBACK, indent=2))
     return dict(_FALLBACK)
 

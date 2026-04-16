@@ -184,10 +184,45 @@ def _refresh_loop() -> None:
         _run_maintenance()
 
 
+def _fast_resolve_pass() -> None:
+    """Quick poll of today's schedule to resolve games that just went Final.
+
+    Runs every 60 s so log.csv is updated within ~1 min of game end rather
+    than waiting up to 5 min for the next full board refresh.  We only fetch
+    today's raw schedule (no model enrichment needed) — record_games() already
+    handles both new-Preview creation (skipped here, no model field) and
+    Final resolution for rows already in the log.
+    """
+    from datetime import date as _date
+    today = _date.today()
+    try:
+        games = mlb_live.get_schedule(today, today)
+        result = prediction_log.record_games(games)
+        if result["resolved"] > 0:
+            print(f"[fast-resolve] resolved {result['resolved']} game(s) "
+                  f"(total logged: {result['total']})")
+            try:
+                from src.auto_calibrate import check_and_calibrate
+                cal = check_and_calibrate()
+                with _CAL_LOCK:
+                    _LAST_CAL_RESULT = cal
+            except Exception as e:
+                print(f"[fast-resolve] calibration check failed: {e}")
+    except Exception as e:
+        print(f"[fast-resolve] error: {e}")
+
+
+def _fast_resolve_loop() -> None:
+    while True:
+        time.sleep(60)
+        _fast_resolve_pass()
+
+
 @app.on_event("startup")
 def _startup() -> None:
     threading.Thread(target=_build_board, daemon=True).start()
     threading.Thread(target=_refresh_loop, daemon=True).start()
+    threading.Thread(target=_fast_resolve_loop, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

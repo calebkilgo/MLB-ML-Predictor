@@ -189,8 +189,8 @@ def resolve_past_games() -> dict:
             if row.get("resolved_at"):
                 continue  # already resolved
             gd = row.get("game_date", "")
-            if not gd or gd >= today_str:
-                continue  # today or future — wait for the live board
+            if not gd or gd > today_str:
+                continue  # future only — also retroactively resolve today
 
             # Query the MLB API for the game's final state.
             n_checked += 1
